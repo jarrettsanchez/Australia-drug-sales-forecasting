@@ -36,7 +36,7 @@ steroids |>
   autoplot(Sales)
 ```
 
-The series does not appear to be stationary. There is a clear upwards trend and a strong seasonal pattern. Variability in the data is non-constant, where the variance appears proportional to the level of series over time.
+The series looks non-stationary. There is a clear upwards trend and a strong seasonal pattern. Variability in the data is non-constant, where the variance appears proportional to the level of series over time.
 
 ```{r}
 steroids |>
@@ -55,9 +55,38 @@ Strong trend in all months, largest trend in January, larger increase in second 
 
 
 **b) Forecast next two years using SES, Holt's linear and Holt's damped trend. Plot the series and the forecasts. Merely based on this plot, discuss the adequacy of these methodologies to forecast from this series. Explain your answer (5 marks total).**
+```{r}
+# stabilise variance
+steroids |>
+  autoplot(log(Sales))
+```
+
+```{r}
+# fit models
+fit_ses_holt <- steroids |>
+  model(
+    'SES' = ETS(log(Sales) ~ error("A") + trend("N") + season("N")),
+    'HL' = ETS(log(Sales) ~ error("A") + trend("A") + season("N")),
+    'Damped' = ETS(log(Sales) ~ error("A") + trend("Ad") + season("N"))
+  )
+
+fc_steroids <- fit_ses_holt |>
+  forecast(h=24)
+
+fc_steroids |>
+  autoplot(steroids, level=NULL) +
+  guides(colour=guide_legend(title="Forecast"))
+```
+
+As evident from the plot shown above, the SES, Holt's Linear and Damped methods captured the upwards trend, but did not seem to capture the seasonal aspect of the series. This occurs since the parameter for seasonality in every model is passed the value "N". More specifically, these methodologies are not adequate at forecasting data with seasonality as: SES is suitable for forecasting data with no clear trend or seasonal pattern, while the Holt's Linear + Damped trend methods are suitable for forecasting data with only trend patterns.
+
 
 
 **c) Repeat b) with Holt-Winters' seasonal methods. Discuss whether additive or multiplicative seasonality is necessary. Explain your answer (5 marks total).**
+```{r}
+
+```
+
 
 
 **d) Compare MSE and MAE of one-step-ahead, four-step-ahead, and six-step-ahead forecasts from methods discussed in b and c above. Report your results neatly and clearly. You can use a Table. Which method has the highest accuracy? Does this selection depend on the number of pre-specified (steps-ahead) forecasts? Explain your answer (5 marks total).**
