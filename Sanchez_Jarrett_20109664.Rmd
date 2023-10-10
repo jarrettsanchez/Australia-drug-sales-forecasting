@@ -1,6 +1,5 @@
 ---
 title: "Sanchez Jarrett 20109664"
-author: "Jarrett Sanchez"
 date: "2023-10-08"
 output: pdf_document
 ---
@@ -11,6 +10,9 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r, include=FALSE}
 library(fpp3)
+
+# read csv file
+aus_steroids <- read.csv("H03_drug_Sales_Australia.csv")
 ```
 
 ## Question 1 - ETS (20 marks)
@@ -18,32 +20,24 @@ library(fpp3)
 **0) Scale the data (e.g., divide by 100). From now on, you'll work with the scaled series (0 marks).**
 
 ```{r}
-# read csv file
-aus_steroids <- read.csv("H03_drug_Sales_Australia.csv")
-
 # scale data, convert to time series
 steroids <- aus_steroids |>
   mutate(Month = yearmonth(Period), Sales = Sales/100) |>
   select(-Time, -Period) |>
   as_tsibble(index = Month)
-
-steroids
 ```
+
+
 
 **a) Plot the series and discuss the main features, including stationarity (2 marks).**
 ```{r}
 steroids |>
-  autoplot(Sales)
+  gg_tsdisplay(Sales)
 ```
 
 The series looks non-stationary. There is a clear upwards trend and a strong seasonal pattern. Variability in the data is non-constant, where the variance appears proportional to the level of series over time.
 
-```{r}
-steroids |>
-  gg_season(Sales)
-```
-
-The plot above confirms seasonality. There appears to be a drop in H03 sales around February of each year. This is likely due to Australia's Pharmaceutical Benefits Scheme which subsidises medicine, making it easier for patients to stockpile them at the end of the year. The Scheme's co-payment amount changes on 1 January each year, which explains the increase in sales towards December as patients would like to stockpile medicine before any potential price increase occurs.
+The seasonal plot on the bottom right confirms seasonality. There appears to be a drop in H03 sales around February annually. This is likely due to Australia's Pharmaceutical Benefits Scheme which subsidises medicine, making it easier for patients to stockpile them at the end of the year. The Scheme's co-payment amount changes on 1 January each year, which explains the increase in sales towards December as patients would like to stockpile medicine before any potential price increase occurs.
 
 ```{r}
 steroids |>
@@ -56,43 +50,178 @@ Strong trend in all months, largest trend in January, larger increase in second 
 
 **b) Forecast next two years using SES, Holt's linear and Holt's damped trend. Plot the series and the forecasts. Merely based on this plot, discuss the adequacy of these methodologies to forecast from this series. Explain your answer (5 marks total).**
 ```{r}
-# stabilise variance
-steroids |>
-  autoplot(log(Sales))
-```
-
-```{r}
-# fit models
+# fit models, use log(Sales) to stabilise variance
 fit_ses_holt <- steroids |>
   model(
-    'SES' = ETS(log(Sales) ~ error("A") + trend("N") + season("N")),
-    'HL' = ETS(log(Sales) ~ error("A") + trend("A") + season("N")),
-    'Damped' = ETS(log(Sales) ~ error("A") + trend("Ad") + season("N"))
+    SES = ETS(log(Sales) ~ error("A") + trend("N") + season("N")),
+    HL = ETS(log(Sales) ~ error("A") + trend("A") + season("N")),
+    Damped = ETS(log(Sales) ~ error("A") + trend("Ad") + season("N"))
   )
 
 fc_steroids <- fit_ses_holt |>
-  forecast(h=24)
+  forecast(h="2 years")
 
 fc_steroids |>
   autoplot(steroids, level=NULL) +
   guides(colour=guide_legend(title="Forecast"))
 ```
 
-As evident from the plot shown above, the SES, Holt's Linear and Damped methods captured the upwards trend, but did not seem to capture the seasonal aspect of the series. This occurs since the parameter for seasonality in every model is passed the value "N". More specifically, these methodologies are not adequate at forecasting data with seasonality as: SES is suitable for forecasting data with no clear trend or seasonal pattern, while the Holt's Linear + Damped trend methods are suitable for forecasting data with only trend patterns.
+As evident from the plot shown above, the SES, Holt's Linear and Damped methods captured the overall upwards trend, but did not seem to capture the seasonal aspect of the series. This occurs since the parameter for seasonality in every model is passed the value "N". More specifically, these methodologies are not adequate at forecasting data with seasonality as: SES is suitable for forecasting data with no clear trend or seasonal pattern, while the Holt's Linear + Damped trend methods are suitable for forecasting data with only trend patterns.
 
 
 
 **c) Repeat b) with Holt-Winters' seasonal methods. Discuss whether additive or multiplicative seasonality is necessary. Explain your answer (5 marks total).**
 ```{r}
+fit_hw <- steroids |>
+  model(
+    HWadd = ETS(log(Sales) ~ error("A") + trend("A") + season("A")),
+    HWmult = ETS(log(Sales) ~ error("M") + trend("A") + season("M")),
+    HWaddD = ETS(log(Sales) ~ error("A") + trend("Ad") + season("A")),
+    HWmultD = ETS(log(Sales) ~ error("M") + trend("Ad") + season("M"))
+  )
 
+fc_steroids <- fit_hw |>
+  forecast(h="2 years")
+
+fc_steroids |>
+  autoplot(steroids, level=NULL) +
+  guides(colour=guide_legend(title="Forecast"))
+```
+
+For my log-transformed series, I would say that additive seasonality is necessary since the seasonal variations appear roughly constant through the series post-transformation. However, if I was to forecast using the original series which had a non-constant variance where the seasonal variations changed proportional to the level of the series, then I would need to use multiplicative seasonality. This can be confirmed through the accuracy report shown below:
+
+```{r}
+# Note: reverting log(Sales) to Sales in fit_hw will return HW's multiplicative damped
+# method with the lowest RMSE and MAE scores, followed by HW's multiplicative method.
+fit_hw |>
+  accuracy() |>
+  select(.model, RMSE, MAE) |>
+  arrange(RMSE)
 ```
 
 
 
 **d) Compare MSE and MAE of one-step-ahead, four-step-ahead, and six-step-ahead forecasts from methods discussed in b and c above. Report your results neatly and clearly. You can use a Table. Which method has the highest accuracy? Does this selection depend on the number of pre-specified (steps-ahead) forecasts? Explain your answer (5 marks total).**
 
+Since RMSE is just a scaled down (square root) version of the MSE, in this report, RMSE will be used for convenience's sake.
 
-**e) Briefly discuss the potential mistake/error we may unintentionally introduce in the discussion when comparing models b and c using the MSE and MAE. (3 marks)**
+```{r}
+train1 <- steroids |>
+  slice(1:(n()-1))
+
+test1 <- steroids |>
+  slice((n()-1):n())
+
+fit_all1 <- train1 |>
+  model(
+    SES = ETS(log(Sales) ~ error("A") + trend("N") + season("N")),
+    HL = ETS(log(Sales) ~ error("A") + trend("A") + season("N")),
+    Damped = ETS(log(Sales) ~ error("A") + trend("Ad") + season("N")),    
+    HWadd = ETS(log(Sales) ~ error("A") + trend("A") + season("A")),
+    HWmult = ETS(log(Sales) ~ error("M") + trend("A") + season("M")),
+    HWaddD = ETS(log(Sales) ~ error("A") + trend("Ad") + season("A")),
+    HWmultD = ETS(log(Sales) ~ error("M") + trend("Ad") + season("M"))
+  )
+
+fc_all1 <- fit_all1 |>
+  forecast(h=1)
+
+suppressWarnings(
+  fc_all1 |>
+    accuracy(test1) |>
+    select(.model, RMSE, MAE) |>
+    arrange(RMSE)
+)
+```
+
+For a one-step-ahead forecast where only one month is predicted into the future, it would make sense that the SES, Holt's linear and Holt's linear damped methods have the best accuracy scores (respectively) since these models tend to capture trends well (especially when dealing with a straight line where seasonality is insignificant).
+
+```{r}
+train4 <- steroids |>
+  slice(1:(n()-4))
+
+test4 <- steroids |>
+  slice((n()-4):n())
+
+fit_all4 <- train4 |>
+  model(
+    SES = ETS(log(Sales) ~ error("A") + trend("N") + season("N")),
+    HL = ETS(log(Sales) ~ error("A") + trend("A") + season("N")),
+    Damped = ETS(log(Sales) ~ error("A") + trend("Ad") + season("N")),    
+    HWadd = ETS(log(Sales) ~ error("A") + trend("A") + season("A")),
+    HWmult = ETS(log(Sales) ~ error("M") + trend("A") + season("M")),
+    HWaddD = ETS(log(Sales) ~ error("A") + trend("Ad") + season("A")),
+    HWmultD = ETS(log(Sales) ~ error("M") + trend("Ad") + season("M"))
+  )
+
+fc_all4 <- fit_all4 |>
+  forecast(h=4)
+
+fc_all4 |>
+  accuracy(test4) |>
+  select(.model, RMSE, MAE) |>
+  arrange(RMSE)
+```
+
+When dealing with a four-step-ahead forecast, seasonality becomes more important, giving Holt-Winters' multiplicative damped method the best accuracy score in this situation.
+
+```{r}
+train6 <- steroids |>
+  slice(1:(n()-6))
+
+test6 <- steroids |>
+  slice((n()-6):n())
+
+fit_all6 <- train6 |>
+  model(
+    SES = ETS(log(Sales) ~ error("A") + trend("N") + season("N")),
+    HL = ETS(log(Sales) ~ error("A") + trend("A") + season("N")),
+    Damped = ETS(log(Sales) ~ error("A") + trend("Ad") + season("N")),    
+    HWadd = ETS(log(Sales) ~ error("A") + trend("A") + season("A")),
+    HWmult = ETS(log(Sales) ~ error("M") + trend("A") + season("M")),
+    HWaddD = ETS(log(Sales) ~ error("A") + trend("Ad") + season("A")),
+    HWmultD = ETS(log(Sales) ~ error("M") + trend("Ad") + season("M"))
+  )
+
+fc_all6 <- fit_all6 |>
+  forecast(h=6)
+
+fc_all6 |>
+  accuracy(test6) |>
+  select(.model, RMSE, MAE) |>
+  arrange(RMSE)
+```
+
+For a six-step-ahead forecast where seasonality is more significant, Holt-Winters' additive damped has the best accuracy for this series.
+
+```{r}
+fc_all_sum <- bind_rows(
+  ## compute accuracy of forecasts
+  suppressWarnings(
+    accuracy(fc_all1, test1)
+  ),
+  accuracy(fc_all4, test4),
+  accuracy(fc_all6, test6)
+  ) |>
+  ## compute mean of RMSE and MAE for all forecasts
+  group_by(.model) |>
+  summarise(RMSE = mean(RMSE), MAE = mean(MAE))
+
+fc_all_sum |>
+  arrange(RMSE)
+```
+
+After taking the mean of every model's RMSE and MAE scores for one/four/six-step-ahead forecasts, the Holt-Winters' additive damped method has the highest accuracy.
+
+However from the previous analysis of the one/multi-step-ahead forecasts, it is evident that the selection of which model is "best" depends on the number of pre-specified steps-ahead forecasts. In order to optimise forecast accuracy, different models should be used for varying forecasting horizons. For example, a short-term forecast may have the best accuracy with SES (as exhibited before with one-step-ahead forecast), whereas a longer-term forecast may require a more complex model that captures the overall trend and seasonality of the data.
+
+
+
+**e) Briefly discuss the potential mistake/error we may unintentionally introduce in the discussion when comparing models from b) and c) using the MSE and MAE. (3 marks)**
+
+A potential mistake that may be unintentionally introduced is the judgement of selecting the best method of forecasting based on the lowest MSE/MAE scores alone. Reasons for this are: the predictive-ability measures from the training data can only be compared when methods have the same number of parameters to estimate, and selecting a model based on lowest MSE/MAE scores may favour complex models that could lead to overfitting.
+
+
 
 
 
