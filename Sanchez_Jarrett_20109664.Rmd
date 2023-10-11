@@ -9,7 +9,9 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r, include=FALSE}
+library(feasts)
 library(fpp3)
+library(urca)
 
 # read csv file
 aus_steroids <- read.csv("H03_drug_Sales_Australia.csv")
@@ -18,12 +20,11 @@ aus_steroids <- read.csv("H03_drug_Sales_Australia.csv")
 ## Question 1 - ETS (20 marks)
 
 **0) Scale the data (e.g., divide by 100). From now on, you'll work with the scaled series (0 marks).**
-
 ```{r}
 # scale data, convert to time series
 steroids <- aus_steroids |>
   mutate(Month = yearmonth(Period), Sales = Sales/100) |>
-  select(-Time, -Period) |>
+  select(Month, Sales) |>
   as_tsibble(index = Month)
 ```
 
@@ -94,7 +95,7 @@ For my log-transformed series, I would say that additive seasonality is necessar
 # Note: reverting log(Sales) to Sales in fit_hw will return HW's multiplicative damped
 # method with the lowest RMSE and MAE scores, followed by HW's multiplicative method.
 fit_hw |>
-  accuracy() |>
+  fabletools::accuracy() |>
   select(.model, RMSE, MAE) |>
   arrange(RMSE)
 ```
@@ -128,7 +129,7 @@ fc_all1 <- fit_all1 |>
 
 suppressWarnings(
   fc_all1 |>
-    accuracy(test1) |>
+    fabletools::accuracy(test1) |>
     select(.model, RMSE, MAE) |>
     arrange(RMSE)
 )
@@ -158,7 +159,7 @@ fc_all4 <- fit_all4 |>
   forecast(h=4)
 
 fc_all4 |>
-  accuracy(test4) |>
+  fabletools::accuracy(test4) |>
   select(.model, RMSE, MAE) |>
   arrange(RMSE)
 ```
@@ -187,7 +188,7 @@ fc_all6 <- fit_all6 |>
   forecast(h=6)
 
 fc_all6 |>
-  accuracy(test6) |>
+  fabletools::accuracy(test6) |>
   select(.model, RMSE, MAE) |>
   arrange(RMSE)
 ```
@@ -198,10 +199,10 @@ For a six-step-ahead forecast where seasonality is more significant, Holt-Winter
 fc_all_sum <- bind_rows(
   ## compute accuracy of forecasts
   suppressWarnings(
-    accuracy(fc_all1, test1)
+    fabletools::accuracy(fc_all1, test1)
   ),
-  accuracy(fc_all4, test4),
-  accuracy(fc_all6, test6)
+  fabletools::accuracy(fc_all4, test4),
+  fabletools::accuracy(fc_all6, test6)
   ) |>
   ## compute mean of RMSE and MAE for all forecasts
   group_by(.model) |>
@@ -221,6 +222,80 @@ However from the previous analysis of the one/multi-step-ahead forecasts, it is 
 
 A potential mistake that may be unintentionally introduced is the judgement of selecting the best method of forecasting based on the lowest MSE/MAE scores alone. Reasons for this are: the predictive-ability measures from the training data can only be compared when methods have the same number of parameters to estimate, and selecting a model based on lowest MSE/MAE scores may favour complex models that could lead to overfitting.
 
+
+
+## Question 2 - Stationarity (20 marks)
+
+**a) Plot ACF and partial ACF. (8 marks total for both parts)**
+```{r}
+steroids |>
+  gg_tsdisplay(Sales, plot_type = 'partial')
+```
+
+
+
+**a.1) Briefly discuss the stationarity of the series based on the ACF. Does your answer here conform with your answer to Question 1a)?**
+
+Based on the ACF, it is evident that the series is non-stationary. The seasonal component is captured through a sinusoidal pattern, where the ACF of the data decreases per season slowly as the time goes by, signifying a non-stationary data. There is also a large and positive autocorrelation value (approximately 0.8) at lag 1, further indicating that the series is non-stationary. This conforms to my answer to Question 1a) where I discussed non-stationarity through trend, seasonal pattern, and non-constant variance.
+
+
+
+**a.2) Should series be differenced in order to obtain a stationary series? Explain your answer.**
+```{r}
+steroids |>
+  features(Sales, unitroot_kpss)
+```
+
+Null states that the series is stationary. Since we have a significant p-value 0.01 from the KPSS test, then the evidence does not support null, suggesting that differencing is required.
+
+
+
+**b) Find appropriate Box-Cox transformation and order of differencing to obtain stationary data. Justify answer even if no Box-Cox transformation required. (12 marks total)**
+```{r}
+mylambda <- steroids |>
+  features(Sales, features=guerrero) |>
+  pull(lambda_guerrero)
+
+steroids |>
+  autoplot(box_cox(Sales, mylambda))
+```
+
+```{r}
+steroids |>
+  mutate(bc_sales = box_cox(Sales, mylambda)) |>
+  features(bc_sales, unitroot_nsdiffs)
+```
+
+Return value 1 indicates one seasonal difference is required.
+
+```{r}
+steroids |>
+  mutate(bc_sales = difference(box_cox(Sales, mylambda), lag=12)) |>
+  features(bc_sales, unitroot_ndiffs)
+```
+
+Return value 1 indicates one ordinary difference is required after seasonal differencing.
+
+```{r}
+# remove seasonality and trend through seasonal differencing, then ordinary differencing
+steroids |>
+  gg_tsdisplay(difference(difference(box_cox(Sales, mylambda), lag=12)), plot_type = 'partial')
+```
+
+Given the differenced plot and the unit root tests conducted above, I would say that the data is now sufficiently stationary. This can be confirmed by conducting another KPSS test:
+
+```{r}
+steroids |>
+  features(difference(difference(box_cox(Sales, mylambda), lag=12)), unitroot_kpss)
+```
+
+A p-value of 0.1 is greater than 0.05, therefore there is not enough evidence to reject null that the series is stationary after seasonal and ordinary differencing.
+
+
+
+## Question 3 - Seasonal & non-seasonal ARIMA modelling (30 marks)
+
+**a) By studying the appropriate graphs of the series in R, propose an appropriate ARIMA(p, d, q) or ARIMA(p, d, q)(P, D, Q) structure to model the series. Explain your answer. Plot/figures can be included as part of your answer (8 marks total).**
 
 
 
