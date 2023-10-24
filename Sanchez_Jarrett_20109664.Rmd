@@ -211,7 +211,7 @@ Return value 1 indicates one ordinary difference is required after seasonal diff
 ```{r}
 # remove seasonality and trend through seasonal differencing, then ordinary differencing
 steroids |>
-  gg_tsdisplay(difference(difference(box_cox(Sales, mylambda), lag=12)), plot_type = 'partial')
+  gg_tsdisplay(difference(difference(box_cox(Sales, mylambda), lag=12)), plot_type = 'partial', lag_max=36)
 ```
 
 Given the differenced plot and the unit root tests conducted above, I would say that the data is now sufficiently stationary. This can be confirmed by conducting another KPSS test:
@@ -229,7 +229,41 @@ A p-value of 0.1 is greater than 0.05, therefore there is not enough evidence to
 
 **a) By studying the appropriate graphs of the series in R, propose an appropriate ARIMA(p, d, q) or ARIMA(p, d, q)(P, D, Q) structure to model the series. Explain your answer. Plot/figures can be included as part of your answer (8 marks total).**
 
+Using ACF:
+
+Non-seasonal (q): significant spike at lag 1 in ACF suggests non-seasonal MA(1) component.
+
+Seasonal (Q): significant spikes at lag 12 and 24 in ACF suggests seasonal MA(2) component.
+
+Possible model: ARIMA(0,1,1)(0,1,2)
+
+Using PACF:
+
+Non-seasonal(p): significant spikes at at lag 1 and 2 in PACF suggests non-seasonal AR(1) and AR(2) components.
+
+Seasonal (P): significant spikes at lag 12 and 24 in PACF suggests seasonal AR(2) component.
+
+Possible models: ARIMA(1,1,0)(2,1,0) and ARIMA(2,1,0)(2,1,0)
+
+Variants to consider: ARIMAARIMA(1,1,0)(2,1,2), and ARIMA(2,1,0)(2,1,2)
+
 ```{r}
+bc_steroids <- steroids |>
+  mutate(bc_sales = box_cox(Sales, mylambda)) |>
+  select(Month, bc_sales)
+
+fit_arima <- bc_steroids |>
+  model(
+    arima011012 = ARIMA(bc_sales ~ pdq(0,1,1) + PDQ(0,1,2)),
+    arima110210 = ARIMA(bc_sales ~ pdq(1,1,0) + PDQ(2,1,0)),
+    arima210210 = ARIMA(bc_sales ~ pdq(2,1,0) + PDQ(2,1,0)),
+    auto = ARIMA(bc_sales, stepwise=FALSE, approx=FALSE)
+  )
+
+glance(fit_arima) |>
+  arrange(AICc) |>
+  select(.model:BIC)
+
 
 ```
 
