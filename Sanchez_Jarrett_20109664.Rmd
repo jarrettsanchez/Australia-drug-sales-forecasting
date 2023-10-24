@@ -104,16 +104,18 @@ fit_hw |>
 
 **d) Compare MSE and MAE of one-step-ahead, four-step-ahead, and six-step-ahead forecasts from methods discussed in b and c above. Report your results neatly and clearly. You can use a Table. Which method has the highest accuracy? Does this selection depend on the number of pre-specified (steps-ahead) forecasts? Explain your answer (5 marks total).**
 
-Since RMSE is just a scaled down (square root) version of the MSE, in this report, RMSE will be used for convenience's sake.
+Since RMSE is just a scaled down (square root) MSE, in this report, RMSE will be used for convenience's sake.
 
+One-step-ahead cross-validation:
 ```{r}
-train1 <- steroids |>
-  slice(1:(n()-1))
+stretch <- steroids |>
+  select(Sales) |>
+  stretch_tsibble(.init = 24, .step = 1) |>
+  relocate(Month, Sales, .id)
 
-test1 <- steroids |>
-  slice((n()-1):n())
+stretch
 
-fit_all1 <- train1 |>
+fit_cv <- stretch |>
   model(
     SES = ETS(log(Sales) ~ error("A") + trend("N") + season("N")),
     HL = ETS(log(Sales) ~ error("A") + trend("A") + season("N")),
@@ -124,97 +126,27 @@ fit_all1 <- train1 |>
     HWmultD = ETS(log(Sales) ~ error("M") + trend("Ad") + season("M"))
   )
 
-fc_all1 <- fit_all1 |>
-  forecast(h=1)
+# forecast up to 6 steps ahead, data needs to have 6 observations per fold.
+test <- new_data(stretch, n=6) |>
+  left_join(steroids, by="Month")
 
-suppressWarnings(
-  fc_all1 |>
-    fabletools::accuracy(test1) |>
-    select(.model, RMSE, MAE) |>
-    arrange(RMSE)
-)
+fc <- forecast(fit_cv, new_data=test) |>
+  group_by(.id) |>
+  mutate(h=row_number() %% 6 + 1) |>
+  ungroup() |>
+  as_fable(response="Sales", distribution = Sales)
+
+fc |> 
+  accuracy(steroids, by=c("h", ".model")) |>
+  select(.model, h, RMSE, MAE) |>
+  filter(h %in% c(1,4,6)) |> # only show one/four/six-step-ahead forecasts
+  group_by(h) |>
+  top_n(-3, wt=RMSE) |>
+  ungroup() |>
+  arrange(h, RMSE)
 ```
 
-For a one-step-ahead forecast where only one month is predicted into the future, it would make sense that the SES, Holt's linear and Holt's linear damped methods have the best accuracy scores (respectively) since these models tend to capture trends well (especially when dealing with a straight line where seasonality is insignificant).
-
-```{r}
-train4 <- steroids |>
-  slice(1:(n()-4))
-
-test4 <- steroids |>
-  slice((n()-4):n())
-
-fit_all4 <- train4 |>
-  model(
-    SES = ETS(log(Sales) ~ error("A") + trend("N") + season("N")),
-    HL = ETS(log(Sales) ~ error("A") + trend("A") + season("N")),
-    Damped = ETS(log(Sales) ~ error("A") + trend("Ad") + season("N")),    
-    HWadd = ETS(log(Sales) ~ error("A") + trend("A") + season("A")),
-    HWmult = ETS(log(Sales) ~ error("M") + trend("A") + season("M")),
-    HWaddD = ETS(log(Sales) ~ error("A") + trend("Ad") + season("A")),
-    HWmultD = ETS(log(Sales) ~ error("M") + trend("Ad") + season("M"))
-  )
-
-fc_all4 <- fit_all4 |>
-  forecast(h=4)
-
-fc_all4 |>
-  fabletools::accuracy(test4) |>
-  select(.model, RMSE, MAE) |>
-  arrange(RMSE)
-```
-
-When dealing with a four-step-ahead forecast, seasonality becomes more important, giving Holt-Winters' multiplicative damped method the best accuracy score in this situation.
-
-```{r}
-train6 <- steroids |>
-  slice(1:(n()-6))
-
-test6 <- steroids |>
-  slice((n()-6):n())
-
-fit_all6 <- train6 |>
-  model(
-    SES = ETS(log(Sales) ~ error("A") + trend("N") + season("N")),
-    HL = ETS(log(Sales) ~ error("A") + trend("A") + season("N")),
-    Damped = ETS(log(Sales) ~ error("A") + trend("Ad") + season("N")),    
-    HWadd = ETS(log(Sales) ~ error("A") + trend("A") + season("A")),
-    HWmult = ETS(log(Sales) ~ error("M") + trend("A") + season("M")),
-    HWaddD = ETS(log(Sales) ~ error("A") + trend("Ad") + season("A")),
-    HWmultD = ETS(log(Sales) ~ error("M") + trend("Ad") + season("M"))
-  )
-
-fc_all6 <- fit_all6 |>
-  forecast(h=6)
-
-fc_all6 |>
-  fabletools::accuracy(test6) |>
-  select(.model, RMSE, MAE) |>
-  arrange(RMSE)
-```
-
-For a six-step-ahead forecast where seasonality is more significant, Holt-Winters' additive damped has the best accuracy for this series.
-
-```{r}
-fc_all_sum <- bind_rows(
-  ## compute accuracy of forecasts
-  suppressWarnings(
-    fabletools::accuracy(fc_all1, test1)
-  ),
-  fabletools::accuracy(fc_all4, test4),
-  fabletools::accuracy(fc_all6, test6)
-  ) |>
-  ## compute mean of RMSE and MAE for all forecasts
-  group_by(.model) |>
-  summarise(RMSE = mean(RMSE), MAE = mean(MAE))
-
-fc_all_sum |>
-  arrange(RMSE)
-```
-
-After taking the mean of every model's RMSE and MAE scores for one/four/six-step-ahead forecasts, the Holt-Winters' additive damped method has the highest accuracy.
-
-However from the previous analysis of the one/multi-step-ahead forecasts, it is evident that the selection of which model is "best" depends on the number of pre-specified steps-ahead forecasts. In order to optimise forecast accuracy, different models should be used for varying forecasting horizons. For example, a short-term forecast may have the best accuracy with SES (as exhibited before with one-step-ahead forecast), whereas a longer-term forecast may require a more complex model that captures the overall trend and seasonality of the data.
+From the one/four/six-step-ahead forecast accuracy results, the Holt-Winters' additive damped method performed with the best accuracy for my log-transformed data set on all three occasions. Specifically for this data set, the selection does not seem to depend on the number of pre-specified steps-ahead forecasts. For other data sets however, we may observe bigger fluctuations depending on the errors observed, meaning other models may outperform with different forecasting horizons. For example, MSE is more sensitive to outliers, therefore one or few extreme predictions from a model can be the difference for whether it is selected or not.
 
 
 
@@ -297,7 +229,9 @@ A p-value of 0.1 is greater than 0.05, therefore there is not enough evidence to
 
 **a) By studying the appropriate graphs of the series in R, propose an appropriate ARIMA(p, d, q) or ARIMA(p, d, q)(P, D, Q) structure to model the series. Explain your answer. Plot/figures can be included as part of your answer (8 marks total).**
 
+```{r}
 
+```
 
 
 
