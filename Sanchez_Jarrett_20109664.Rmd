@@ -113,8 +113,6 @@ stretch <- steroids |>
   stretch_tsibble(.init = 24, .step = 1) |>
   relocate(Month, Sales, .id)
 
-stretch
-
 fit_cv <- stretch |>
   model(
     SES = ETS(log(Sales) ~ error("A") + trend("N") + season("N")),
@@ -245,7 +243,7 @@ Seasonal (P): significant spikes at lag 12 and 24 in PACF suggests seasonal AR(2
 
 Possible models: ARIMA(1,1,0)(2,1,0) and ARIMA(2,1,0)(2,1,0)
 
-Variants to consider: ARIMAARIMA(1,1,0)(2,1,2), and ARIMA(2,1,0)(2,1,2)
+Variants to consider: ARIMA(1,1,1)(0,1,2), ARIMA(1,1,1)(2,1,2), ARIMA(1,1,0)(2,1,2), and ARIMA(2,1,0)(2,1,2)
 
 ```{r}
 bc_steroids <- steroids |>
@@ -255,17 +253,186 @@ bc_steroids <- steroids |>
 fit_arima <- bc_steroids |>
   model(
     arima011012 = ARIMA(bc_sales ~ pdq(0,1,1) + PDQ(0,1,2)),
+    arima111012 = ARIMA(bc_sales ~ pdq(1,1,1) + PDQ(0,1,2)),
+    arima111212 = ARIMA(bc_sales ~ pdq(1,1,1) + PDQ(2,1,2)),
     arima110210 = ARIMA(bc_sales ~ pdq(1,1,0) + PDQ(2,1,0)),
     arima210210 = ARIMA(bc_sales ~ pdq(2,1,0) + PDQ(2,1,0)),
-    auto = ARIMA(bc_sales, stepwise=FALSE, approx=FALSE)
+    arima110212 = ARIMA(bc_sales ~ pdq(1,1,0) + PDQ(2,1,2)),
+    arima210212 = ARIMA(bc_sales ~ pdq(2,1,0) + PDQ(2,1,2))
   )
 
 glance(fit_arima) |>
   arrange(AICc) |>
   select(.model:BIC)
-
-
 ```
 
+I propose ARIMA(2,1,0)(2,1,2) as the most appropriate ARIMA model to structure the series seeing that it has the lowest AICc value. Seasonal components are necessary since the data contains seasonality. Further justification for these values were discussed above the code.
 
 
+
+**b) Should a constant be included in the model? Justify your answer. (2 marks)**
+
+A constant can be included in the model IF it improves the AICc value. Since the proposed model has d=1, then a constant can be included. If d was greater than 1 however, the constant cannot be used, as a higher order trend is dangerous when forecasting.
+
+**c) Fit the ARIMA model proposed in 3(a) using R and examine the residuals. Is the proposed model satisfactory? Explain your answer (8 marks total).**
+
+```{r}
+fit_final <- bc_steroids |>
+  model(arima210212 = ARIMA(bc_sales ~ pdq(2,1,0) + PDQ(2,1,2)))
+
+fit_final |>
+  gg_tsresiduals(lag=36)
+```
+
+From the plot above, we can see that the residuals hover around zero and is approximately normally distributed. There are also only two significant spikes out of 36 lags, therefore the data is consistent with white noise.
+
+This can be confirmed through a Ljung-Box test:
+
+```{r}
+augment(fit_final) |>
+  features(.innov, ljung_box, lag=36, dof=6)
+```
+
+Large p-value 0.15 > 0.05 confirms that residuals are similar to white noise, therefore confirming that the proposed model is satisfactory.
+
+**d) Now, let ARIMA() choose an ARIMA model for this data. Does ARIMA() return the same model as the one chosen in 3(a)? If not, which model do you think suits best? Explain your answer. (8 marks total)**
+
+```{r}
+fit_auto <- bc_steroids |>
+  model(
+    auto = ARIMA(bc_sales, stepwise=FALSE, approx=FALSE)  # make R work for better model
+  )
+
+glance(fit_auto) |>
+  arrange(AICc) |>
+  select(.model:BIC)
+```
+
+```{r}
+fit_auto
+```
+
+ARIMA returns the same model chosen in 3(a). I believe that this was the case because I found it as one of the variants to consider just from manual selection. This confirms that the model ARIMA(2,1,0)(2,1,2) suits best.
+
+**e) Which method do you think is the best between ETS and ARIMA to forecast from this series (compare Q3 and Q1 results). Justify your answer. (4 marks)**
+
+```{r}
+train_compare <- bc_steroids |>
+  select(bc_sales) |>
+  slice(1:180)
+
+fit_arima2 <- train_compare |>
+  model(auto = ARIMA(bc_sales, stepwise=FALSE, approx=FALSE))
+
+fit_arima2 |>
+  gg_tsresiduals(lag_max=36)
+
+augment(fit_arima2) |>
+  features(.innov, ljung_box, lag=16, dof=6)
+
+fit_ets <- train_compare |>
+  model(HWaddD = ETS(bc_sales ~ error("A") + trend("Ad") + season("A")))
+
+fit_ets |>
+  gg_tsresiduals(lag_max=36)
+
+augment(fit_ets) |>
+  features(.innov, ljung_box, lag=16)
+```
+
+```{r}
+bind_rows(
+  fit_arima2 |> accuracy(),
+  fit_ets |> accuracy(), 
+  fit_arima2 |> forecast(h=24) |> accuracy(bc_steroids),
+  fit_ets |> forecast(h=24) |> accuracy(bc_steroids)
+) |>
+  select(.model:MASE)
+```
+
+The plot shows that the ARIMA model is slightly more accurate based on the test set RMSE, MAPE, and MASE. We also observe from the Ljung-Box test that the ETS model's residuals do not resemble white noise with a low p-value of 0.00018. Therefore, the ARIMA model performs best between the two models when forecasting this series.
+
+
+
+## Question 4 - Seasonality and the function accuracy() (10 marks)
+
+**a) Fit Holt's Linear with no damping parameter, a Holt-Winters additive and Holt-Winters multiplicative model to NZ CPI from global_economy data set. Compare in-sample accuracy with function accuracy. The output will return NaN for the Holt-Winters models. Why is this happening? Write down a short paragraph discussing this question (5 marks total).**
+
+```{r}
+nz_cpi <- global_economy |>
+  filter(Country == "New Zealand") |>
+  select(CPI)
+
+nz_cpi |>
+  autoplot(CPI)
+
+fit_cpi <- nz_cpi |>
+  model(
+    HL = ETS(CPI ~ error("A") + trend("A") + season("N")),
+    HWadd = ETS(CPI ~ error("A") + trend("A") + season("A")),
+    HWmult = ETS(CPI ~ error("M") + trend("A") + season("M"))
+  )
+
+fit_cpi |>
+  accuracy()
+```
+
+Holt-Winters models return NaN as there is very little to no seasonality observed for the NZ CPI series (see the plot above). This means that the seasonal component is not necessary since there is no seasonality to capture. The model attempts to estimate a seasonal component, even though no meaningful seasonality exists in the data.
+
+
+
+**b) Now, repeat this analysis with the number of pigs slaughtered in Victoria, available in the data set aus_livestock. Did you observe any warnings from Holt-Winters? Why did you get no errors as opposed to (a)? Briefly explain your answer - compare to 4(a). (5 marks total)**
+
+```{r}
+vic_pigs <- aus_livestock |>
+  filter(Animal == "Pigs", State == "Victoria")
+
+vic_pigs |>
+  autoplot(Count)
+
+fit_pigs <- vic_pigs |>
+  model(
+    HL = ETS(Count ~ error("A") + trend("A") + season("N")),
+    HWadd = ETS(Count ~ error("A") + trend("A") + season("A")),
+    HWmult = ETS(Count ~ error("M") + trend("A") + season("M"))
+  )
+
+fit_pigs |>
+  accuracy()
+```
+
+No warnings from Holt-Winters method this time around. This is because there is evident seasonality observed for this series (see the plot above). This allows for the model to estimate a seasonal component as opposed to the time series from 4(a).
+
+
+
+## Question 5 - Select the correct answer and explain as requested (20 marks)
+
+**a) In general, prediction intervals from the ARIMA models increase as the forecast horizon increases. Explain your answer.**
+
+True.
+
+Predictions become less certain and accurate as the model makes forecasts for farther time points. This could be due to errors adding up over time, or the fact that there is limited historical data to work with, therefore the model may struggle to capture long-term trends, thus increasing the prediction intervals/uncertainty.
+
+
+
+**b) The AICc cannot be used to compare between ARIMA and ETS models. Explain your answer.**
+
+True.
+
+AICc cannot be used to compare between ETS and ARIMA models because they are in different model classes, and the likelihood is computed in different ways.
+
+
+
+**c) Time series cross-validation can be used to compare between ARIMA and ETS models. Explain your answer.**
+
+True.
+
+Cross-validation can be used to compare between ARIMA and ETS models. This is because cross-validation splits the data into training and test sets, where both models are trained on one segment, and then tests both the models' predictions on the other. Since this method evaluates how well the models can forecast unseen data, we can then determine which of the models work better for the time series.
+
+
+
+**d) After a deep analysis, the ETS model was selected for forecasting based on its forecasting performance from the test set. Explain your answer.**
+
+False.
+
+The ETS model was not selected. It was the ARIMA model that was selected based on the test set RMSE, MAPE, and MASE since this model had less errors, therefore a better forecasting performance compared to the ETS model.
